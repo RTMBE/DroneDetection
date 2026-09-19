@@ -86,10 +86,90 @@ A portable, handheld dual-mode drone detection system engineered around an **ESP
     * **Flight Telemetry Sync Bytes**: MAVLink 1.0 (`0xFE`), MAVLink 2.0 (`0xFD`), Crossfire / ExpressLRS (`0xC8`, `0xEE`, `0xEC`), MSP flight controller (`$M<`, `$MX`), and SBUS (`0x0F`).
 * **Multi-Sensor Threat Fusion**: When a 2.4 GHz drone frame is intercepted, it sets `g_drone24Detected = true`, updates `g_droneIncoming = true`, and accelerates the headphone Geiger feedback to warn the operator.
 
-### INMP441 Acoustic Sensing (GPIO 5, 6, 7)
+### INMP441 TinyML Acoustic Drone Detection Pipeline (GPIO 5, 6, 7)
 * **I2S Protocol**: 16 kHz sample rate, 32-bit slot, Left-channel mono.
-* **Propeller Blade-Pass Frequency Filter**: Multi-rotor drone propellers spin at 8,000–25,000 RPM, producing blade-pass fundamental frequencies and harmonics concentrated in the **250 Hz – 1,200 Hz** band.
-* **Cascaded Biquad Bandpass Filter**: A transposed Direct Form II 4th-order filter isolates this acoustic band from ambient wind rumbling (<150 Hz) and high-frequency noise. When both the absolute sound level and the whine energy ratio exceed preset thresholds, the acoustic alert triggers.
+* **Cascaded Two-Stage Sentry System**:
+  * **Stage 1 (Passive / Low-Power DSP)**:
+    * Continuously streams DMA audio (4 buffers of 512 samples, 128 ms margin) on Core 0 into a 16,000-sample (1-second) circular ring buffer.
+    * 4th-order biquad bandpass filter isolates **200 Hz – 2.5 kHz** (blade-pass harmonics and motor whine).
+    * Calculates rolling bandpass RMS energy without invoking the neural net, saving battery and CPU cycles.
+  * **Stage 2 (Active TinyML Verification)**:
+    * When frame energy exceeds the dynamic `ENERGY_THRESHOLD`, Stage 2 is triggered.
+    * Circular ring buffer callback `getSignalDataCallback` feeds 1-second frames to Edge Impulse `signal_t`.
+    * Model classifies drone motor/propeller whine in ~25 ms.
+* **Dynamic Ambient Calibration**:
+  * On startup, samples quiet ambient noise for **3.0 seconds** to calculate the ambient noise baseline.
+  * Automatically sets `ENERGY_THRESHOLD` to `baseline * 2.5x` (tunable via `include/config.h`).
+  * Can be recalibrated at any time by sending command `'a'` over Serial.
+* **Dual-Modality Threat Confirmation (AD8318 + INMP441)**:
+  * Concurrently monitors 5.8 GHz analog RF (GPIO 4) and acoustic blade-pass signatures (GPIO 5/6/7).
+  * When both RF carrier power and TinyML drone classification are confirmed simultaneously, the device enters **Dual-Modality Alert**:
+    * Priority 1400 Hz warning chirp on headphone output (GPIO 15).
+    * Instant voice alert playback ("*Дрон летит*").
+    * Maximum tactile Geiger counter rate (95% threat).
+    * Visual alert LED locked high (GPIO 16).
+
+---
+
+### Dataset Preprocessing Pipeline (`tools/drone_audio_dataset.py`)
+Easily convert raw drone flight videos and background noise recordings into Edge Impulse ready training blocks:
+
+1. **Extract Mono 16 kHz Audio from Video**:
+   ```bash
+   python tools/drone_audio_dataset.py extract input_video.mp4 drone_sample_01.wav
+   ```
+2. **Automated 1-Second Slicing with 50% Overlap**:
+   ```bash
+   python tools/drone_audio_dataset.py slice drone_sample_01.wav dataset/drone --prefix drone --duration 1.0 --stride 0.5
+   python tools/drone_audio_dataset.py slice background.wav dataset/background --prefix bg --duration 1.0
+   ```
+3. **Automated Batch Processing & Train/Test Split**:
+   ```bash
+   python tools/drone_audio_dataset.py pipeline --drone-dir raw/drone --bg-dir raw/background --output-dir dataset/ --train-ratio 0.8 --stride 0.5
+   ```
+4. **Audit Dataset Structure**:
+   ```bash
+   python tools/drone_audio_dataset.py audit dataset/
+   ```
+
+---
+
+### 100% Free & Crazy-Lightweight Model Training (No Cloud Accounts / Limits)
+
+#### Option 1: Pure-C Random Forest (`tools/train_acoustic_model.py`) — *Fastest & Lightest*
+* **100% Local & Free**: Trains locally on your computer using `scikit-learn`.
+* **Zero Runtime Overhead**: Generates a self-contained C header ([`include/drone_model.h`](file:///c:/Users/rkuzmik/Documents/DRONE/include/drone_model.h)) with pure C `if/else` logic.
+* **Footprint**: **< 1 ms execution time**, **< 4 KB RAM**, **< 15 KB Flash**!
+* **Usage**:
+  ```bash
+  python tools/train_acoustic_model.py --dataset dataset/ --output include/drone_model.h --trees 10 --depth 5
+  ```
+  *The firmware in [`src/acoustic_detector.cpp`](file:///c:/Users/rkuzmik/Documents/DRONE/src/acoustic_detector.cpp) automatically detects `drone_model.h` and activates it for Stage 2 sentry verification!*
+
+#### Option 2: Google Colab Notebook (`tools/EdgeImpulse_Alternative_Colab.ipynb`) — *Free Cloud GPU*
+* Open [`tools/EdgeImpulse_Alternative_Colab.ipynb`](file:///c:/Users/rkuzmik/Documents/DRONE/tools/EdgeImpulse_Alternative_Colab.ipynb) in [Google Colab](https://colab.research.google.com/).
+* Extracts 40-band MFE features, trains a compact Conv1D neural network on free cloud GPUs, quantizes to **INT8**, and exports `model_data.h`.
+
+#### Option 3: Edge Impulse (Free Tier)
+* **Input Block**:
+  * Sensor: Time series data
+  * Sample rate: `16000 Hz`
+  * Window size: `1000 ms`
+  * Window increase: `500 ms`
+* **Processing Block (MFE)**:
+  * Type: Audio (MFE) (Mel-Frequency Energy)
+  * Frame length: `0.02 s` (320 samples)
+  * Frame stride: `0.01 s` (160 samples)
+  * Filter number: `40`
+  * FFT length: `512`
+  * Low cutoff: `150 Hz` | High cutoff: `4000 Hz`
+* **Learning Block (Conv1D)**:
+  * Architecture: 1D Convolutional Neural Network
+  * Input: `40 MFE features × 99 time frames`
+  * Training: 50 epochs, learning rate 0.005, batch size 32
+  * Quantization: `INT8 (Quantized)` with ESP-NN vector acceleration
+
+---
 
 ### Headphone Audio Cue Engine & Recorded Voice Alert (GPIO 15)
 * **High-Speed PWM DAC Emulation (78.125 kHz Carrier)**:
@@ -107,7 +187,6 @@ A portable, handheld dual-mode drone detection system engineered around an **ESP
     python tools/wav2header.py my_voice_alert.mp3 include/audio_samples.h --rate 11025
     ```
 
-
 ---
 
 ## 4. Serial Telemetry & Interactive Console (115200 Baud)
@@ -116,14 +195,15 @@ Open the Serial Monitor or Serial Plotter at **115200 baud** to view real-time d
 
 ### Live Dashboard Output
 ```text
-[RF] 2085mV (-66.0dBm) | Threat: [          ]   0%         || [MIC] RMS:  312 (Whine: NO, 12%) || [AUDIO]  0 cps
-[RF] 1620mV (-46.7dBm) | Threat: [###       ]  30%         || [MIC] RMS:  480 (Whine: NO, 18%) || [AUDIO]  3 cps
-[RF]  850mV (-14.6dBm) | Threat: [########  ]  78% [BURST] || [MIC] RMS: 1250 (Whine:YES, 49%) || [AUDIO] 22 cps
+[RF 5.8G] 2085mV (-66.0dBm) [          ]   0%           || [MIC] Energy: 45200 (Thresh:113000, Sentry:IDLE, Drone: NO  0%) || [AUDIO]  0 cps
+[RF 5.8G] 1620mV (-46.7dBm) [###       ]  30%           || [MIC] Energy: 85400 (Thresh:113000, Sentry:IDLE, Drone: NO  0%) || [AUDIO]  3 cps
+[RF 5.8G]  850mV (-14.6dBm) [########  ]  78% [!DUAL!!] || [MIC] Energy:195000 (Thresh:113000, Sentry:TRIG, Drone:YES 89%) || [AUDIO] 32 cps
 ```
 
 ### Interactive Serial Commands
 Send single-character commands over Serial to control the device at runtime:
-* **`c`**: **Calibrate Clean Air Floor** – Captures the current ambient RF level and sets it as baseline 0% threat.
+* **`c`**: **Calibrate Clean Air Floor** – Captures current RF reading as baseline 0% threat.
+* **`a`**: **Calibrate Acoustic Floor** – Samples quiet ambient sound for 3s to set dynamic `ENERGY_THRESHOLD`.
 * **`m`**: **Toggle Mute** – Mutes or unmutes headphone audio output.
 * **`p`**: **Toggle Plotter Mode** – Switches telemetry between dashboard text and CSV format for the Arduino Serial Plotter.
 * **`h`**: **Help** – Displays the command menu.

@@ -40,6 +40,7 @@ void Telemetry::printHelp() {
 #if SERIAL_LOGGING_ENABLED
     Serial.println(F("\n--- DRONE SNIFFER COMMANDS ---"));
     Serial.println(F(" [c] Calibrate Clean Air Floor: Sets current RF reading as baseline 0% threat"));
+    Serial.println(F(" [a] Calibrate Acoustic Floor: Samples quiet ambient sound (3s) to set ENERGY_THRESHOLD"));
     Serial.println(F(" [m] Toggle Mute: Enable/Disable headphone audio click output"));
     Serial.println(F(" [p] Toggle Plotter Mode: Switch between Dashboard text and CSV Serial Plotter"));
     Serial.println(F(" [h] Help: Display this menu"));
@@ -58,6 +59,10 @@ void Telemetry::handleSerialCommands() {
                 Serial.printf("\n>>> [CALIBRATION] Baseline Clean-Air set to: %.1f mV <<<\n\n", 
                               _rf.getQuiescentMv());
                 break;
+            case 'a':
+            case 'A':
+                _acoustic.calibrateAmbientFloor(ACOUSTIC_CALIBRATION_DURATION_MS);
+                break;
             case 'm':
             case 'M':
                 _audio.setMuted(!_audio.isMuted());
@@ -68,7 +73,7 @@ void Telemetry::handleSerialCommands() {
             case 'P':
                 _mode = (_mode == TELEMETRY_MODE_DASHBOARD) ? TELEMETRY_MODE_PLOTTER : TELEMETRY_MODE_DASHBOARD;
                 if (_mode == TELEMETRY_MODE_PLOTTER) {
-                    Serial.println(F("RF_mV,RF_Threat_Pct,Mic_RMS,Whine_Ratio_Pct,Audio_CPS"));
+                    Serial.println(F("RF_mV,RF_Threat_Pct,Mic_RMS,Whine_Ratio_Pct,Mic_Energy,Mic_Thresh,Audio_CPS"));
                 } else {
                     Serial.println(F("\n>>> [TELEMETRY] Switched to Dashboard mode <<<\n"));
                 }
@@ -94,22 +99,26 @@ void Telemetry::printDashboard() {
         bar[i] = '#';
     }
 
-    const char* statusTag = "       ";
-    if (g_droneIncoming) {
-        statusTag = "[!INCOMING!]";
+    const char* statusTag = "         ";
+    if (g_dualThreatConfirmed) {
+        statusTag = "[!DUAL!!]";
+    } else if (g_droneIncoming) {
+        statusTag = "[!ALERT!]";
     } else if (_rf.isBurstDetected()) {
-        statusTag = "[BURST]     ";
+        statusTag = "[BURST]  ";
     }
 
-    Serial.printf("[RF 5.8G] %4.0fmV (%5.1fdBm) | Threat: [%s] %3.0f%% %s || [MIC] RMS:%5.0f (Whine:%s, %2.0f%%) || [AUDIO] %2d cps%s\n",
+    Serial.printf("[RF 5.8G] %4.0fmV (%5.1fdBm) [%s] %3.0f%% %s || [MIC] Energy:%6.0f (Thresh:%6.0f, Sentry:%s, Drone:%s %.0f%%) || [AUDIO] %2d cps%s\n",
                   _rf.getFilteredMilliVolts(),
                   _rf.getEstimatedDbm(),
                   bar,
                   _rf.getThreatPercent(),
                   statusTag,
-                  _acoustic.getRmsAmplitude(),
-                  _acoustic.isWhineDetected() ? "YES" : " NO",
-                  _acoustic.getWhineRatio() * 100.0f,
+                  _acoustic.getLatestFrameEnergy(),
+                  _acoustic.getEnergyThreshold(),
+                  _acoustic.isStage1Triggered() ? "TRIG" : "IDLE",
+                  _acoustic.isDroneConfirmed() ? "YES" : " NO",
+                  _acoustic.getDroneConfidence() * 100.0f,
                   _audio.getClicksPerSecond(),
                   _audio.isMuted() ? " (MUTED)" : "");
 #endif
@@ -117,12 +126,14 @@ void Telemetry::printDashboard() {
 
 void Telemetry::printPlotter() {
 #if SERIAL_LOGGING_ENABLED
-    // CSV format: RF_mV, RF_Threat_Pct, Mic_RMS, Whine_Ratio_Pct, Audio_CPS
-    Serial.printf("%.1f,%.1f,%.1f,%.1f,%u\n",
+    // CSV format: RF_mV, RF_Threat_Pct, Mic_RMS, Whine_Ratio_Pct, Mic_Energy, Mic_Thresh, Audio_CPS
+    Serial.printf("%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%u\n",
                   _rf.getFilteredMilliVolts(),
                   _rf.getThreatPercent(),
                   _acoustic.getRmsAmplitude(),
                   _acoustic.getWhineRatio() * 100.0f,
+                  _acoustic.getLatestFrameEnergy(),
+                  _acoustic.getEnergyThreshold(),
                   _audio.getClicksPerSecond());
 #endif
 }

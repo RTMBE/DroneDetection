@@ -75,6 +75,9 @@ extern volatile bool  g_droneIncoming;
 extern volatile float g_rfThreatPercent;
 extern volatile float g_rfDbm;
 extern volatile float g_rfMilliVolts;
+extern volatile bool  g_acousticDroneConfirmed;
+extern volatile float g_acousticConfidence;
+extern volatile bool  g_dualThreatConfirmed;
 
 // -----------------------------------------------------------------------------
 // 2.2 ESP32-S3 INTERNAL 2.4 GHz WI-FI DRONE DETECTOR
@@ -152,20 +155,32 @@ extern volatile uint8_t  g_droneHopCount;
 
 
 // -----------------------------------------------------------------------------
-// 3. INMP441 I2S ACOUSTIC SENSING PARAMETERS (DISABLED FOR CURRENT BUILD)
+// 3. INMP441 I2S ACOUSTIC & TINYML SENSING PARAMETERS
 // -----------------------------------------------------------------------------
-#define ACOUSTIC_DETECTOR_ENABLED   0       // 0 = Disabled (RF-only focus), 1 = Enabled
+#define ACOUSTIC_DETECTOR_ENABLED           1       // 1 = Enabled (Two-Stage Sentry System)
 
-#define I2S_SAMPLE_RATE         16000   // 16 kHz sample rate (Nyquist = 8 kHz, covers 250Hz - 4kHz drone whine)
-#define I2S_DMA_BUFFER_COUNT    4       // Number of DMA ring buffers
-#define I2S_DMA_BUFFER_SAMPLES  256     // Samples per DMA buffer
-#define ACOUSTIC_WINDOW_SAMPLES 512     // Analysis window size for RMS & filter (32 ms @ 16 kHz)
+#define I2S_SAMPLE_RATE                     16000   // 16 kHz sample rate (Nyquist = 8 kHz)
+#define I2S_DMA_BUFFER_COUNT                4       // 4 DMA ring buffers (128 ms latency margin)
+#define I2S_DMA_BUFFER_SAMPLES              512     // 512 samples (32 ms per DMA buffer)
+#define INFERENCE_SAMPLES                   16000   // 1.0 second window at 16 kHz (16000 samples)
+#define ACOUSTIC_WINDOW_SAMPLES             512     // Analysis window size for RMS & filter
 
-// Drone Acoustic Signature Band (Propeller blade-pass fundamental & harmonics)
-#define ACOUSTIC_BAND_LOW_HZ    250.0f  // Lower bound of motor whine band
-#define ACOUSTIC_BAND_HIGH_HZ   1200.0f // Upper bound of motor whine band
-#define ACOUSTIC_MIN_RMS_FLOOR  500.0f  // Minimum amplitude to prevent false alarms in quiet rooms
-#define ACOUSTIC_WHINE_RATIO_THRESH 0.35f // Ratio of band energy to total energy to classify as drone whine
+// Cascaded Sentry Stage 1: Propeller Blade-Pass & Motor Whine Filter (200 Hz - 2.5 kHz)
+#define ACOUSTIC_BAND_LOW_HZ                200.0f  // 200 Hz lower cutoff
+#define ACOUSTIC_BAND_HIGH_HZ               2500.0f // 2.5 kHz upper cutoff
+#define ACOUSTIC_MIN_RMS_FLOOR              500.0f  // Minimum amplitude floor
+#define ACOUSTIC_WHINE_RATIO_THRESH         0.35f   // Ratio of band energy to total energy
+
+// Cascaded Sentry Stage 2: TinyML Inference & Calibration Thresholds
+#define ACOUSTIC_CALIBRATION_DURATION_MS    3000    // 3-second quiet ambient calibration on boot
+#define ACOUSTIC_ENERGY_THRESHOLD_MULTIPLIER 2.5f   // Dynamic energy trigger = baseline * multiplier
+#define ACOUSTIC_DEFAULT_ENERGY_THRESHOLD   1200000.0f // Fallback threshold before calibration
+#define ACOUSTIC_CONFIDENCE_THRESHOLD       0.80f   // 80% confidence threshold for drone classification
+
+// Dual-Modality Threat Fusion Parameters
+#define DUAL_THREAT_RF_MIN_PCT              20.0f   // Minimum 5.8 GHz RF threat % to confirm dual threat
+#define AUDIO_BEEP_FREQ_HZ                  1400    // 1400 Hz warning chirp frequency on GPIO 15
+#define AUDIO_BEEP_DURATION_MS              150     // 150 ms warning chirp duration
 
 // -----------------------------------------------------------------------------
 // 4. AUDIO CUE & VOICE ALERT PARAMETERS (GPIO 15)
