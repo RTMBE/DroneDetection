@@ -22,11 +22,11 @@ void Telemetry::begin() {
     Serial.println(F("=================================================="));
     Serial.println(F("   ESP32-S3 HANDHELD DRONE SNIFFER v1.0          "));
     Serial.printf( "   RF Target: %s on GPIO %d\n", RF_TARGET_BAND_LABEL, PIN_AD8318_VOUT);
-    Serial.println(F("   Acoustic: INMP441 (I2S) | Audio Cue: PJ-392   "));
+    Serial.println(F("   Acoustic: Dual INMP441 (Stereo I2S) | Audio Cue: PJ-392"));
     Serial.println(F("=================================================="));
     Serial.printf(" [AD8318] Pin: GPIO %d | Atten: 12dB | Baseline: %.0f mV\n", 
                   PIN_AD8318_VOUT, _rf.getQuiescentMv());
-    Serial.printf(" [INMP441] SD: GPIO %d | SCK: GPIO %d | WS: GPIO %d\n", 
+    Serial.printf(" [INMP441 DUAL] SD: GPIO %d | SCK: GPIO %d | WS: GPIO %d (Mic1 L/R->GND, Mic2 L/R->3.3V)\n", 
                   PIN_I2S_SD, PIN_I2S_SCK, PIN_I2S_WS);
     Serial.printf(" [HEADPHONE] Pin: GPIO %d (PJ-392 via 220R + 10uF)\n", 
                   PIN_AUDIO_JACK);

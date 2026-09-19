@@ -18,9 +18,18 @@ volatile uint32_t AcousticDetector::s_dmaDropCount = 0;
 AcousticDetector::AcousticDetector()
     : _rmsWideband(0.0f),
       _rmsWhineBand(0.0f),
+      _rmsLeft(0.0f),
+      _rmsRight(0.0f),
+      _rmsWhineLeft(0.0f),
+      _rmsWhineRight(0.0f),
       _peakAmplitude(0),
       _whineRatio(0.0f),
+      _whineRatioLeft(0.0f),
+      _whineRatioRight(0.0f),
       _whineDetected(false),
+      _whineDetectedLeft(false),
+      _whineDetectedRight(false),
+      _channelBalance(0.0f),
       _latestFrameEnergy(0.0f),
       _ambientBaselineEnergy(0.0f),
       _energyThreshold(ACOUSTIC_DEFAULT_ENERGY_THRESHOLD),
@@ -29,9 +38,9 @@ AcousticDetector::AcousticDetector()
       _droneConfidence(0.0f),
       _isCalibrated(false),
       _hp_b0(0), _hp_b1(0), _hp_b2(0), _hp_a1(0), _hp_a2(0),
-      _hp_z1(0), _hp_z2(0),
       _lp_b0(0), _lp_b1(0), _lp_b2(0), _lp_a1(0), _lp_a2(0),
-      _lp_z1(0), _lp_z2(0) {
+      _hp_z1_L(0), _hp_z2_L(0), _lp_z1_L(0), _lp_z2_L(0),
+      _hp_z1_R(0), _hp_z2_R(0), _lp_z1_R(0), _lp_z2_R(0) {
     memset(_sampleBuffer, 0, sizeof(_sampleBuffer));
 }
 
@@ -42,7 +51,11 @@ bool AcousticDetector::begin() {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
         .sample_rate = I2S_SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+#if DUAL_MIC_ENABLED
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT, // Stereo: Left (Mic 1) + Right (Mic 2)
+#else
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,  // Single Mic: Left (L/R -> GND)
+#endif
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = I2S_DMA_BUFFER_COUNT,
@@ -106,21 +119,37 @@ void AcousticDetector::computeBiquadCoefficients() {
     _lp_a1 = (-2.0f * cos_lp)         / lp_a0;
     _lp_a2 = (1.0f - alpha_lp)        / lp_a0;
 
-    // Reset filter states
-    _hp_z1 = _hp_z2 = 0.0f;
-    _lp_z1 = _lp_z2 = 0.0f;
+    // Reset filter states for both Left and Right channels
+    _hp_z1_L = _hp_z2_L = 0.0f;
+    _lp_z1_L = _lp_z2_L = 0.0f;
+    _hp_z1_R = _hp_z2_R = 0.0f;
+    _lp_z1_R = _lp_z2_R = 0.0f;
 }
 
-float AcousticDetector::processBandpassFilter(float input) {
+float AcousticDetector::processBandpassFilterLeft(float input) {
     // Stage 1: High-Pass Filter (Direct Form II Transposed)
-    float hp_out = (_hp_b0 * input) + _hp_z1;
-    _hp_z1 = (_hp_b1 * input) - (_hp_a1 * hp_out) + _hp_z2;
-    _hp_z2 = (_hp_b2 * input) - (_hp_a2 * hp_out);
+    float hp_out = (_hp_b0 * input) + _hp_z1_L;
+    _hp_z1_L = (_hp_b1 * input) - (_hp_a1 * hp_out) + _hp_z2_L;
+    _hp_z2_L = (_hp_b2 * input) - (_hp_a2 * hp_out);
 
     // Stage 2: Low-Pass Filter (Direct Form II Transposed)
-    float lp_out = (_lp_b0 * hp_out) + _lp_z1;
-    _lp_z1 = (_lp_b1 * hp_out) - (_lp_a1 * lp_out) + _lp_z2;
-    _lp_z2 = (_lp_b2 * hp_out) - (_lp_a2 * lp_out);
+    float lp_out = (_lp_b0 * hp_out) + _lp_z1_L;
+    _lp_z1_L = (_lp_b1 * hp_out) - (_lp_a1 * lp_out) + _lp_z2_L;
+    _lp_z2_L = (_lp_b2 * hp_out) - (_lp_a2 * lp_out);
+
+    return lp_out;
+}
+
+float AcousticDetector::processBandpassFilterRight(float input) {
+    // Stage 1: High-Pass Filter (Direct Form II Transposed)
+    float hp_out = (_hp_b0 * input) + _hp_z1_R;
+    _hp_z1_R = (_hp_b1 * input) - (_hp_a1 * hp_out) + _hp_z2_R;
+    _hp_z2_R = (_hp_b2 * input) - (_hp_a2 * hp_out);
+
+    // Stage 2: Low-Pass Filter (Direct Form II Transposed)
+    float lp_out = (_lp_b0 * hp_out) + _lp_z1_R;
+    _lp_z1_R = (_lp_b1 * hp_out) - (_lp_a1 * lp_out) + _lp_z2_R;
+    _lp_z2_R = (_lp_b2 * hp_out) - (_lp_a2 * lp_out);
 
     return lp_out;
 }
@@ -128,32 +157,64 @@ float AcousticDetector::processBandpassFilter(float input) {
 void AcousticDetector::calibrateAmbientFloor(uint32_t durationMs) {
 #if SERIAL_LOGGING_ENABLED
     Serial.println();
+#if DUAL_MIC_ENABLED
+    Serial.printf("[CALIBRATION] Sampling quiet ambient noise across dual mics for %u ms...\n", durationMs);
+#else
     Serial.printf("[CALIBRATION] Sampling quiet ambient noise for %u ms...\n", durationMs);
+#endif
 #endif
 
     double totalEnergy = 0.0;
     uint32_t frameCount = 0;
     uint32_t startMs = millis();
+#if DUAL_MIC_ENABLED
+    int32_t rawDma[I2S_DMA_BUFFER_SAMPLES * 2];
+#else
     int32_t rawDma[I2S_DMA_BUFFER_SAMPLES];
+#endif
 
     while (millis() - startMs < durationMs) {
         size_t bytesRead = 0;
         esp_err_t err = i2s_read(I2S_NUM_0, rawDma, sizeof(rawDma), &bytesRead, pdMS_TO_TICKS(50));
         if (err == ESP_OK && bytesRead > 0) {
+#if DUAL_MIC_ENABLED
+            size_t totalWords = bytesRead / sizeof(int32_t);
+            size_t stereoPairs = totalWords / 2;
+            double frameEnergy = 0.0;
+            for (size_t i = 0; i < stereoPairs; ++i) {
+                int16_t sampleL = static_cast<int16_t>(rawDma[2 * i] >> 14);
+                int16_t sampleR = static_cast<int16_t>(rawDma[2 * i + 1] >> 14);
+                int16_t sampleMono = static_cast<int16_t>((static_cast<int32_t>(sampleL) + static_cast<int32_t>(sampleR)) / 2);
+
+                // Buffer averaged audio into circular ring
+                s_audioRingBuffer[s_bufferHead] = sampleMono;
+                s_bufferHead = (s_bufferHead + 1) % INFERENCE_SAMPLES;
+                s_totalSamplesRecorded++;
+
+                frameEnergy += static_cast<double>(sampleMono) * static_cast<double>(sampleMono);
+            }
+            if (stereoPairs > 0) {
+                frameEnergy /= stereoPairs;
+                totalEnergy += frameEnergy;
+                frameCount++;
+            }
+#else
             size_t count = bytesRead / sizeof(int32_t);
             double frameEnergy = 0.0;
             for (size_t i = 0; i < count; ++i) {
                 int16_t sample16 = static_cast<int16_t>(rawDma[i] >> 14);
-                // Buffer into circular ring
                 s_audioRingBuffer[s_bufferHead] = sample16;
                 s_bufferHead = (s_bufferHead + 1) % INFERENCE_SAMPLES;
                 s_totalSamplesRecorded++;
 
                 frameEnergy += static_cast<double>(sample16) * static_cast<double>(sample16);
             }
-            frameEnergy /= count;
-            totalEnergy += frameEnergy;
-            frameCount++;
+            if (count > 0) {
+                frameEnergy /= count;
+                totalEnergy += frameEnergy;
+                frameCount++;
+            }
+#endif
         }
         vTaskDelay(pdMS_TO_TICKS(2));
     }
@@ -265,16 +326,106 @@ void AcousticDetector::triggerHeadphoneBeep(int freqHz, int durationMs) {
 
 bool AcousticDetector::update() {
     size_t bytesRead = 0;
-    // Bounded DMA read: 512 samples @ 16 kHz is 32 ms. Timeout 40 ms prevents stalling Core 0.
+    // Bounded DMA read: 512 stereo frames @ 16 kHz is 32 ms. Timeout 40 ms prevents stalling Core 0.
     esp_err_t res = i2s_read(I2S_NUM_0, _sampleBuffer, sizeof(_sampleBuffer), &bytesRead, pdMS_TO_TICKS(40));
     if (res != ESP_OK || bytesRead == 0) {
         s_dmaDropCount++;
         return false;
     }
 
+#if DUAL_MIC_ENABLED
+    const size_t totalWords = bytesRead / sizeof(int32_t);
+    const size_t numStereoPairs = totalWords / 2;
+    if (numStereoPairs < I2S_DMA_BUFFER_SAMPLES) {
+        s_dmaDropCount++; // Partial read indicates DMA frame underrun
+    }
+
+    if (numStereoPairs == 0) {
+        return false;
+    }
+
+    double sumSqRawL = 0.0;
+    double sumSqRawR = 0.0;
+    double sumSqRawMono = 0.0;
+    float sumSqWhineL = 0.0f;
+    float sumSqWhineR = 0.0f;
+    int32_t maxAmp = 0;
+
+    for (size_t i = 0; i < numStereoPairs; ++i) {
+        // INMP441 outputs 24-bit MSB-aligned in 32-bit frame. Shift by 14 to obtain 16-bit signed PCM.
+        int32_t rawL = _sampleBuffer[2 * i];
+        int32_t rawR = _sampleBuffer[2 * i + 1];
+
+        int16_t sampleL = static_cast<int16_t>(rawL >> 14);
+        int16_t sampleR = static_cast<int16_t>(rawR >> 14);
+
+        // Beamformed / averaged mono sample for 1.0s TinyML inference ring buffer
+        int16_t sampleMono = static_cast<int16_t>((static_cast<int32_t>(sampleL) + static_cast<int32_t>(sampleR)) / 2);
+
+        // Circular ring buffer update
+        s_audioRingBuffer[s_bufferHead] = sampleMono;
+        s_bufferHead = (s_bufferHead + 1) % INFERENCE_SAMPLES;
+        s_totalSamplesRecorded++;
+
+        int32_t absL = abs(sampleL);
+        int32_t absR = abs(sampleR);
+        if (absL > maxAmp) maxAmp = absL;
+        if (absR > maxAmp) maxAmp = absR;
+
+        sumSqRawL += static_cast<double>(sampleL) * static_cast<double>(sampleL);
+        sumSqRawR += static_cast<double>(sampleR) * static_cast<double>(sampleR);
+        sumSqRawMono += static_cast<double>(sampleMono) * static_cast<double>(sampleMono);
+
+        // Stage 1 Biquad Bandpass Filter (200 Hz - 2.5 kHz) for Left and Right channels
+        float filtL = processBandpassFilterLeft(static_cast<float>(sampleL));
+        float filtR = processBandpassFilterRight(static_cast<float>(sampleR));
+
+        sumSqWhineL += (filtL * filtL);
+        sumSqWhineR += (filtR * filtR);
+    }
+
+    _peakAmplitude = maxAmp;
+
+    // Instantaneous metrics for this DMA frame
+    double frameEnergyMono = sumSqRawMono / static_cast<double>(numStereoPairs);
+    _latestFrameEnergy = static_cast<float>(frameEnergyMono);
+
+    float frameRmsWideL = sqrtf(static_cast<float>(sumSqRawL / static_cast<double>(numStereoPairs)));
+    float frameRmsWideR = sqrtf(static_cast<float>(sumSqRawR / static_cast<double>(numStereoPairs)));
+    float frameRmsWhineL = sqrtf(sumSqWhineL / static_cast<float>(numStereoPairs));
+    float frameRmsWhineR = sqrtf(sumSqWhineR / static_cast<float>(numStereoPairs));
+
+    // Rolling exponential smoothing
+    const float alpha = 0.25f;
+    _rmsLeft       = (_rmsLeft       * (1.0f - alpha)) + (frameRmsWideL  * alpha);
+    _rmsRight      = (_rmsRight      * (1.0f - alpha)) + (frameRmsWideR  * alpha);
+    _rmsWhineLeft  = (_rmsWhineLeft  * (1.0f - alpha)) + (frameRmsWhineL * alpha);
+    _rmsWhineRight = (_rmsWhineRight * (1.0f - alpha)) + (frameRmsWhineR * alpha);
+
+    _rmsWideband   = fmaxf(_rmsLeft, _rmsRight);
+    _rmsWhineBand  = fmaxf(_rmsWhineLeft, _rmsWhineRight);
+
+    // Whine energy ratio for both channels
+    _whineRatioLeft  = (_rmsLeft > 10.0f) ? (_rmsWhineLeft / _rmsLeft) : 0.0f;
+    _whineRatioRight = (_rmsRight > 10.0f) ? (_rmsWhineRight / _rmsRight) : 0.0f;
+    _whineRatio      = fmaxf(_whineRatioLeft, _whineRatioRight);
+
+    _whineDetectedLeft  = (_rmsLeft >= ACOUSTIC_MIN_RMS_FLOOR && _whineRatioLeft >= ACOUSTIC_WHINE_RATIO_THRESH);
+    _whineDetectedRight = (_rmsRight >= ACOUSTIC_MIN_RMS_FLOOR && _whineRatioRight >= ACOUSTIC_WHINE_RATIO_THRESH);
+    _whineDetected      = (_whineDetectedLeft || _whineDetectedRight);
+
+    // Directional balance: -1.0 (Right) to +1.0 (Left)
+    float sumRms = _rmsLeft + _rmsRight;
+    _channelBalance = (sumRms > 1.0f) ? ((_rmsLeft - _rmsRight) / sumRms) : 0.0f;
+#else
+    // Single Microphone Processing (Left Channel)
     const size_t numSamples = bytesRead / sizeof(int32_t);
     if (numSamples < I2S_DMA_BUFFER_SAMPLES) {
         s_dmaDropCount++; // Partial read indicates DMA frame underrun
+    }
+
+    if (numSamples == 0) {
+        return false;
     }
 
     double sumSqRaw = 0.0;
@@ -300,7 +451,7 @@ bool AcousticDetector::update() {
         sumSqRaw += static_cast<double>(sample16) * static_cast<double>(sample16);
 
         // Stage 1 Biquad Bandpass Filter (200 Hz - 2.5 kHz)
-        float filteredSample = processBandpassFilter(sF);
+        float filteredSample = processBandpassFilterLeft(sF);
         sumSqWhineBand += (filteredSample * filteredSample);
     }
 
@@ -317,6 +468,10 @@ bool AcousticDetector::update() {
     const float alpha = 0.25f;
     _rmsWideband  = (_rmsWideband  * (1.0f - alpha)) + (frameRmsWide  * alpha);
     _rmsWhineBand = (_rmsWhineBand * (1.0f - alpha)) + (frameRmsWhine * alpha);
+    _rmsLeft      = _rmsWideband;
+    _rmsRight     = 0.0f;
+    _rmsWhineLeft = _rmsWhineBand;
+    _rmsWhineRight= 0.0f;
 
     // Whine energy ratio
     if (_rmsWideband > 10.0f) {
@@ -324,8 +479,14 @@ bool AcousticDetector::update() {
     } else {
         _whineRatio = 0.0f;
     }
+    _whineRatioLeft  = _whineRatio;
+    _whineRatioRight = 0.0f;
 
-    _whineDetected = (_rmsWideband >= ACOUSTIC_MIN_RMS_FLOOR && _whineRatio >= ACOUSTIC_WHINE_RATIO_THRESH);
+    _whineDetected      = (_rmsWideband >= ACOUSTIC_MIN_RMS_FLOOR && _whineRatio >= ACOUSTIC_WHINE_RATIO_THRESH);
+    _whineDetectedLeft  = _whineDetected;
+    _whineDetectedRight = false;
+    _channelBalance     = 0.0f;
+#endif
 
     // =========================================================================
     // Stage 1 Sentry Evaluation: Check if energy exceeds calibrated threshold

@@ -191,7 +191,9 @@ void WiFiDetector::analyzeTimingAndHopping(const uint8_t* mac, uint8_t channel, 
             }
         } else {
             // Decay periodic confidence if arrival was irregular
-            if (t->periodicHits > 0) {
+            if (deltaUs > 35000) {
+                t->periodicHits = 0;
+            } else if (t->periodicHits > 0) {
                 t->periodicHits--;
             }
         }

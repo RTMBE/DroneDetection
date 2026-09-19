@@ -58,6 +58,13 @@ void RFDetector::update() {
     // 3. Exponential Moving Average (EMA) filter
     _filteredMv = (_filteredMv * (1.0f - RF_EMA_ALPHA)) + (_rawMv * RF_EMA_ALPHA);
 
+#if RF_ADAPTIVE_BASELINE_ENABLED
+    // Adaptive baseline drift tracking: slowly track upward thermal/ambient voltage drift
+    if (_rawMv > _quiescentMv) {
+        _quiescentMv = (_quiescentMv * 0.9995f) + (_rawMv * 0.0005f);
+    }
+#endif
+
     // 4. Calculate estimated RF power in dBm
     // Transfer function: Vout = Vsat + Slope * (dBm - Ref_dBm)
     // dBm = Ref_dBm + (Vout - Vsat) / Slope

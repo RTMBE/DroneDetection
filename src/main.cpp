@@ -156,9 +156,34 @@ void setup() {
 
     Serial.println(F("[SYSTEM READY] ESP32-S3 Dual-Modality Drone Sniffer Active."));
     Serial.println(F("               Listening for blade-pass acoustic signatures & RF carriers...\n"));
+
+#if BATTERY_OPTIMIZATION_ENABLED
+    setCpuFrequencyMhz(80); // Start in low-power 80 MHz mode to conserve battery
+#endif
 }
 
 void loop() {
+    // 0. Dynamic CPU Frequency Scaling: 80 MHz in quiet air, 240 MHz during threat
+#if BATTERY_OPTIMIZATION_ENABLED
+    static uint32_t s_lastThreatActiveMs = 0;
+    bool systemActive = g_droneIncoming || rfDetector.isBurstDetected() || 
+                        (g_rfThreatPercent >= RF_THREAT_MIN_PERCENT);
+#if ACOUSTIC_DETECTOR_ENABLED
+    systemActive |= acousticDetector.isStage1Triggered();
+#endif
+    if (systemActive) {
+        s_lastThreatActiveMs = millis();
+        if (getCpuFrequencyMhz() < 240) {
+            setCpuFrequencyMhz(240); // Max clock for instantaneous RF response & TinyML
+        }
+    } else if (millis() - s_lastThreatActiveMs >= 3000) {
+        // 3 seconds of calm air -> scale down to 80 MHz to save >60% CPU power
+        if (getCpuFrequencyMhz() > 80) {
+            setCpuFrequencyMhz(80);
+        }
+    }
+#endif
+
     // 1. Fast parallel RF power sampling and EMA filtering (Core 1, GPIO 4)
     rfDetector.update();
 

@@ -97,10 +97,19 @@ public:
 
     // Metrics and status accessors
     float   getRmsAmplitude() const          { return _rmsWideband; }
+    float   getRmsLeft() const               { return _rmsLeft; }
+    float   getRmsRight() const              { return _rmsRight; }
     float   getWhineBandRms() const          { return _rmsWhineBand; }
+    float   getWhineBandRmsLeft() const      { return _rmsWhineLeft; }
+    float   getWhineBandRmsRight() const     { return _rmsWhineRight; }
     int32_t getPeakAmplitude() const         { return _peakAmplitude; }
     float   getWhineRatio() const            { return _whineRatio; }
+    float   getWhineRatioLeft() const        { return _whineRatioLeft; }
+    float   getWhineRatioRight() const       { return _whineRatioRight; }
     bool    isWhineDetected() const          { return _whineDetected; }
+    bool    isWhineLeft() const              { return _whineDetectedLeft; }
+    bool    isWhineRight() const             { return _whineDetectedRight; }
+    float   getChannelBalance() const        { return _channelBalance; }
 
     float   getEnergyThreshold() const       { return _energyThreshold; }
     void    setEnergyThreshold(float th)     { _energyThreshold = th; }
@@ -119,14 +128,24 @@ public:
 
 private:
     void computeBiquadCoefficients();
-    float processBandpassFilter(float input);
+    float processBandpassFilterLeft(float input);
+    float processBandpassFilterRight(float input);
 
-    // Audio & Sentry Metrics
+    // Audio & Sentry Metrics (Wideband & Dual Channels)
     float   _rmsWideband;
     float   _rmsWhineBand;
+    float   _rmsLeft;
+    float   _rmsRight;
+    float   _rmsWhineLeft;
+    float   _rmsWhineRight;
     int32_t _peakAmplitude;
     float   _whineRatio;
+    float   _whineRatioLeft;
+    float   _whineRatioRight;
     bool    _whineDetected;
+    bool    _whineDetectedLeft;
+    bool    _whineDetectedRight;
+    float   _channelBalance;        // -1.0 (Right) to +1.0 (Left)
 
     float   _latestFrameEnergy;
     float   _ambientBaselineEnergy;
@@ -136,17 +155,26 @@ private:
     float   _droneConfidence;
     bool    _isCalibrated;
 
-    // Direct Form II Transposed Biquad Filter (Cascaded HPF 200 Hz + LPF 2500 Hz @ 16 kHz)
+    // Direct Form II Transposed Biquad Filter Coefficients (HPF 200 Hz + LPF 2500 Hz @ 16 kHz)
     float _hp_b0, _hp_b1, _hp_b2;
     float _hp_a1, _hp_a2;
-    float _hp_z1, _hp_z2;
 
     float _lp_b0, _lp_b1, _lp_b2;
     float _lp_a1, _lp_a2;
-    float _lp_z1, _lp_z2;
 
-    // Raw DMA buffer (512 32-bit samples per read)
+    // Separate filter states for Left and Right channels
+    float _hp_z1_L, _hp_z2_L;
+    float _lp_z1_L, _lp_z2_L;
+
+    float _hp_z1_R, _hp_z2_R;
+    float _lp_z1_R, _lp_z2_R;
+
+    // Raw DMA buffer (Single mic: 512 samples; Dual mic: 1024 samples)
+#if DUAL_MIC_ENABLED
+    int32_t _sampleBuffer[I2S_DMA_BUFFER_SAMPLES * 2];
+#else
     int32_t _sampleBuffer[I2S_DMA_BUFFER_SAMPLES];
+#endif
 
     // Static 1-second circular ring buffer (16,000 samples @ 16 kHz)
     static int16_t          s_audioRingBuffer[INFERENCE_SAMPLES];

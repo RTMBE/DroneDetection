@@ -13,18 +13,31 @@
 // AD8318 5.8 GHz Analog RF Power Detector
 #define PIN_AD8318_VOUT         4       // ESP32 ADC1 Channel 3
 
-// INMP441 Digital I2S Microphone
+// INMP441 Digital I2S Microphone(s)
+// Single Mic Mode (DUAL_MIC_ENABLED 0):
+//   - INMP441 L/R pin wired to GND (Left Channel)
+// Dual Mic Mode (DUAL_MIC_ENABLED 1):
+//   - Mic 1 (Left Channel):  L/R pin wired to GND
+//   - Mic 2 (Right Channel): L/R pin wired to 3.3V (VDD)
+//   - Both mics share SCK, WS, and SD lines.
 #define PIN_I2S_SD              5       // I2S Serial Data (DIN)
 #define PIN_I2S_SCK             6       // I2S Bit Clock (BCLK)
 #define PIN_I2S_WS              7       // I2S Word Select / LRCLK (WS)
 
-// PJ-392 3.5mm Headphone Jack (Audio Cue Tone / Clicks)
+// PJ-392 3.5mm Headphone Jack (Audio Cue Tone / Clicks / Voice Alert)
 // Driven via 220 Ohm resistor + 10 uF DC blocking capacitor
-#define PIN_AUDIO_JACK          15      // LEDC PWM audio tone generator
+#define AUDIO_JACK_ENABLED      0       // 0 = No headphone jack (Visual LED alert only, saves power), 1 = Headphone jack enabled (GPIO 15 PWM audio)
+#define PIN_AUDIO_JACK          15      // LEDC PWM audio tone generator (GPIO 15)
 
 // Visual Alert LED (Drone Incoming Indicator)
 // Driven via 220Ω - 330Ω resistor to LED anode; cathode to GND
 #define PIN_ALERT_LED           16      // GPIO 16 (adjacent to GPIO 15 audio pin)
+
+// -----------------------------------------------------------------------------
+// 1.1 POWER & DETECTION RANGE OPTIMIZATIONS
+// -----------------------------------------------------------------------------
+#define BATTERY_OPTIMIZATION_ENABLED    1   // 1 = Dynamic CPU scaling (80 MHz in calm air, 240 MHz on alert)
+#define RF_ADAPTIVE_BASELINE_ENABLED    1   // 1 = Continuous leaky baseline tracking (auto-compensates thermal drift)
 
 // -----------------------------------------------------------------------------
 // 2. AD8318 RF DETECTOR PARAMETERS
@@ -38,7 +51,7 @@
 #endif
 
 #define RF_ADC_RESOLUTION_BITS  12      // 12-bit ADC (0 - 4095)
-#define RF_ADC_OVERSAMPLES      32      // Multisample count for noise suppression
+#define RF_ADC_OVERSAMPLES      64      // 64x Multisample count for enhanced sensitivity & extended range
 #define RF_EMA_ALPHA            0.18f   // Exponential moving average filter factor (0.0 to 1.0)
 
 // AD8318 Transfer Function Characteristics (Inverted Log Response):
@@ -158,6 +171,7 @@ extern volatile uint8_t  g_droneHopCount;
 // 3. INMP441 I2S ACOUSTIC & TINYML SENSING PARAMETERS
 // -----------------------------------------------------------------------------
 #define ACOUSTIC_DETECTOR_ENABLED           1       // 1 = Enabled (Two-Stage Sentry System)
+#define DUAL_MIC_ENABLED                    0       // 0 = Single INMP441 Mic (Left, L/R -> GND), 1 = Stereo Dual INMP441 Array
 
 #define I2S_SAMPLE_RATE                     16000   // 16 kHz sample rate (Nyquist = 8 kHz)
 #define I2S_DMA_BUFFER_COUNT                4       // 4 DMA ring buffers (128 ms latency margin)

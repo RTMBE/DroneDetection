@@ -32,6 +32,7 @@ AudioCue::~AudioCue() {
 }
 
 void AudioCue::begin() {
+#if AUDIO_JACK_ENABLED
     pinMode(PIN_AUDIO_JACK, OUTPUT);
     digitalWrite(PIN_AUDIO_JACK, LOW);
 
@@ -59,9 +60,16 @@ void AudioCue::begin() {
     if (err != ESP_OK) {
         _audioTimer = NULL;
     }
+#else
+    _lastClickTimeMs = millis();
+    _lastRateWindowMs = millis();
+#endif
 }
 
 void AudioCue::playAlertAudio(bool forceRestart) {
+#if !AUDIO_JACK_ENABLED
+    return; // Headphone jack disabled in config to conserve battery
+#endif
     if (_muted) return;
     if (_audioPlaying && !forceRestart) return;
 
@@ -97,6 +105,7 @@ void AudioCue::playAlertAudio(bool forceRestart) {
 void AudioCue::stopAlertAudio() {
     if (_audioPlaying) {
         _audioPlaying = false;
+#if AUDIO_JACK_ENABLED
         if (_audioTimer != NULL) {
             esp_timer_stop(_audioTimer);
         }
@@ -104,6 +113,7 @@ void AudioCue::stopAlertAudio() {
         ledcWrite(PIN_AUDIO_JACK, 0);
 #else
         ledcWrite(AUDIO_LEDC_CHANNEL, 0);
+#endif
 #endif
     }
 }
@@ -148,6 +158,9 @@ void IRAM_ATTR AudioCue::handleAudioTick() {
 }
 
 void AudioCue::startClick(uint32_t freqHz) {
+#if !AUDIO_JACK_ENABLED
+    return; // Headphone jack disabled in config to conserve battery
+#endif
     if (_muted || _audioPlaying) return;
 
 #if USE_LEDC_V3
@@ -165,10 +178,12 @@ void AudioCue::startClick(uint32_t freqHz) {
 }
 
 void AudioCue::stopAudio() {
+#if AUDIO_JACK_ENABLED
 #if USE_LEDC_V3
     ledcWrite(PIN_AUDIO_JACK, 0);
 #else
     ledcWrite(AUDIO_LEDC_CHANNEL, 0);
+#endif
 #endif
     _pulseActive = false;
 }
