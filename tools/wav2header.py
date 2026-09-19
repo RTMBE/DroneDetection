@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""
+wav2header.py - Audio Converter for ESP32-S3 Handheld Drone Sniffer
+Converts any MP3/WAV/OGG audio recording into an 8-bit unsigned PCM
+C/C++ header file stored in flash (PROGMEM) for PWM DAC playback on GPIO 15.
+
+Usage:
+    python tools/wav2header.py input.mp3 [output_header.h] [--rate 11025]
+"""
+
+import sys
+import os
+import argparse
+import struct
+
+def load_audio(file_path):
+    """Load audio file into mono floating-point samples [-1.0, 1.0] and sample rate."""
+    # Attempt loading with pygame (supports MP3, OGG, WAV, etc.)
+    try:
+        import pygame
+        pygame.mixer.init(frequency=44100, size=-16, channels=2)
+        sound = pygame.mixer.Sound(file_path)
+        raw = sound.get_raw()
+        num_samples = len(raw) // 4
+        samples = []
+        for i in range(num_samples):
+            l, r = struct.unpack_from('<hh', raw, i * 4)
+            mono = (l + r) / (2.0 * 32768.0)
+            samples.append(mono)
+        return samples, 44100
+    except ImportError:
+        pass
+
+    # Fallback to standard library wave module for WAV files
+    if file_path.lower().endswith('.wav'):
+        import wave
+        with wave.open(file_path, 'rb') as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            n_frames = wf.getnframes()
+            raw = wf.readframes(n_frames)
+
+            samples = []
+            if sampwidth == 2:  # 16-bit signed
+                fmt = f'<{n_frames * n_channels}h'
+                unpacked = struct.unpack(fmt, raw)
+                for i in range(0, len(unpacked), n_channels):
+                    mono = sum(unpacked[i:i+n_channels]) / (n_channels * 32768.0)
+                    samples.append(mono)
+            elif sampwidth == 1:  # 8-bit unsigned
+                for i in range(0, len(raw), n_channels):
+                    mono = (sum(raw[i:i+n_channels]) / n_channels - 128.0) / 128.0
+                    samples.append(mono)
+            else:
+                raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
+            return samples, framerate
+
+    raise RuntimeError(
+        "Could not load audio. Please install pygame (`pip install pygame-ce`) or supply a 16-bit WAV file."
+    )
+
+def normalize_audio(samples, target_peak=0.95):
+    """Normalize audio to peak volume."""
+    max_amp = max(abs(s) for s in samples) if samples else 0
+    if max_amp > 1e-5:
+        gain = target_peak / max_amp
+        return [s * gain for s in samples], gain
+    return samples, 1.0
+
+def trim_silence(samples, sample_rate, threshold=0.03, pad_ms=50):
+    """Trim leading and trailing silence with a small padding buffer."""
+    pad_samples = int(sample_rate * pad_ms / 1000.0)
+
+    start_idx = 0
+    for i, s in enumerate(samples):
+        if abs(s) > threshold:
+            start_idx = max(0, i - pad_samples)
+            break
+
+    end_idx = len(samples)
+    for i in range(len(samples) - 1, -1, -1):
+        if abs(samples[i]) > threshold:
+            end_idx = min(len(samples), i + pad_samples)
+            break
+
+    return samples[start_idx:end_idx]
+
+def resample_linear(samples, in_rate, out_rate):
+    """Resample audio using linear interpolation."""
+    if in_rate == out_rate:
+        return samples
+
+    out_length = int(len(samples) * out_rate / in_rate)
+    ratio = in_rate / out_rate
+    resampled = []
+
+    for i in range(out_length):
+        pos = i * ratio
+        idx0 = int(pos)
+        idx1 = min(idx0 + 1, len(samples) - 1)
+        frac = pos - idx0
+        val = (1.0 - frac) * samples[idx0] + frac * samples[idx1]
+        resampled.append(val)
+
+    return resampled
+
+def apply_fade(samples, sample_rate, fade_ms=10):
+    """Apply a smooth fade-in and fade-out to prevent DC pops in headphones."""
+    fade_len = int(sample_rate * fade_ms / 1000.0)
+    if fade_len > len(samples) // 2:
+        fade_len = len(samples) // 2
+
+    out = list(samples)
+    for i in range(fade_len):
+        factor = i / float(fade_len)
+        out[i] *= factor
+        out[len(out) - 1 - i] *= factor
+
+    return out
+
+def convert_to_u8(samples):
+    """Convert floating point [-1.0, 1.0] to unsigned 8-bit [0, 255] with 128 as silence."""
+    u8_list = []
+    for s in samples:
+        # Clamp to [-1.0, 1.0]
+        s_clamped = max(-1.0, min(1.0, s))
+        val = int(s_clamped * 127.0 + 128.0)
+        u8_list.append(max(0, min(255, val)))
+    return u8_list
+
+def generate_header(u8_samples, sample_rate, output_path, var_name="DRONE_ALERT_AUDIO_DATA"):
+    """Write C++ header with PROGMEM array."""
+    count = len(u8_samples)
+    duration_s = count / sample_rate
+
+    lines = [
+        "// =============================================================================",
+        "// ESP32-S3 Handheld Drone Sniffer - Recorded Audio Alert Samples",
+        "// Automatically generated by tools/wav2header.py",
+        f"// Sample Rate: {sample_rate} Hz | Samples: {count} | Duration: {duration_s:.2f}s",
+        "// Format: 8-bit Unsigned PCM (PWM DAC Emulation on GPIO 15)",
+        "// =============================================================================",
+        "#pragma once",
+        "",
+        "#include <Arduino.h>",
+        "",
+        f"#define AUDIO_ALERT_SAMPLE_RATE     {sample_rate}",
+        f"#define AUDIO_ALERT_SAMPLE_COUNT    {count}",
+        f"#define AUDIO_ALERT_DURATION_MS     {int(duration_s * 1000)}",
+        "",
+        f"const uint8_t {var_name}[{count}] PROGMEM = {{"
+    ]
+
+    # Format 16 bytes per line
+    bytes_per_line = 16
+    for i in range(0, count, bytes_per_line):
+        chunk = u8_samples[i:i+bytes_per_line]
+        hex_str = ", ".join(f"0x{b:02X}" for b in chunk)
+        comma = "," if (i + bytes_per_line) < count else ""
+        lines.append(f"    {hex_str}{comma}")
+
+    lines.append("};")
+    lines.append("")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+def main():
+    parser = argparse.ArgumentParser(description="Convert audio file to C/C++ PROGMEM header for ESP32-S3.")
+    parser.add_argument("input", help="Path to input audio file (.mp3, .wav, .ogg)")
+    parser.add_argument("output", nargs="?", default="include/audio_samples.h", help="Path to output header file (default: include/audio_samples.h)")
+    parser.add_argument("--rate", type=int, default=11025, choices=[8000, 11025, 16000, 22050], help="Target sample rate in Hz (default: 11025)")
+    parser.add_argument("--no-normalize", action="store_true", help="Disable automatic volume normalization")
+    parser.add_argument("--no-trim", action="store_true", help="Do not trim leading/trailing silence")
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.input):
+        print(f"[ERROR] Input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[INFO] Loading: {args.input}")
+    samples, in_rate = load_audio(args.input)
+    orig_duration = len(samples) / in_rate
+    print(f"[INFO] Loaded {len(samples)} samples @ {in_rate} Hz ({orig_duration:.2f}s)")
+
+    # 1. Normalize
+    if not args.no_normalize:
+        samples, gain = normalize_audio(samples)
+        print(f"[INFO] Applied volume normalization: {gain:.2f}x gain")
+
+    # 2. Trim silence
+    if not args.no_trim:
+        samples = trim_silence(samples, in_rate)
+        print(f"[INFO] Trimmed silence: {len(samples)/in_rate:.2f}s remaining")
+
+    # 3. Resample
+    print(f"[INFO] Resampling from {in_rate} Hz -> {args.rate} Hz...")
+    samples = resample_linear(samples, in_rate, args.rate)
+
+    # 4. Anti-pop edge fading
+    samples = apply_fade(samples, args.rate, fade_ms=10)
+
+    # 5. Convert to 8-bit unsigned PCM
+    u8_samples = convert_to_u8(samples)
+
+    # 6. Generate header
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    generate_header(u8_samples, args.rate, args.output)
+
+    kb_size = len(u8_samples) / 1024.0
+    print(f"[OK] Successfully wrote {args.output}")
+    print(f"[OK] Header size: {len(u8_samples)} bytes ({kb_size:.1f} KB in Flash PROGMEM)")
+    print(f"[OK] Playback duration: {len(u8_samples) / args.rate:.2f} seconds @ {args.rate} Hz")
+
+if __name__ == "__main__":
+    main()
