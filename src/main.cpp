@@ -46,6 +46,10 @@ void onDroneIncomingTriggered(float dbm, float threatPct) {
     if (g_drone24Detected) {
         Serial.printf(" [ALERT] 2.4 GHz Drone: Channel %d | RSSI: %d dBm | Vendor: %d\n",
                       g_drone24Channel, g_drone24Rssi, g_drone24Vendor);
+        if (g_droneBehaviorFlags) {
+            Serial.printf(" [ALERT] Behavioral Signatures: 0x%02X | Clock/TDD Rate: %d Hz | Channels: %d\n",
+                          g_droneBehaviorFlags, g_droneDetectedRateHz, g_droneHopCount);
+        }
     }
     Serial.println(F("**************************************************"));
     Serial.println();

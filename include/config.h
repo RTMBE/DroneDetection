@@ -110,6 +110,48 @@ extern volatile uint8_t g_drone24Channel;
 extern volatile uint8_t g_drone24Vendor;
 
 // -----------------------------------------------------------------------------
+// 2.3 BEHAVIORAL & PHYSICAL LAYER RF SIGNATURES (NON-COOPERATIVE DRONE DETECTION)
+// -----------------------------------------------------------------------------
+// Detects drones with ZERO Remote ID, disabled beacons, or spoofed MACs using:
+// 1. Rigid TDD Video Interval (10ms / 20ms) vs stochastic CSMA/CA Wi-Fi
+// 2. Clocked RC Control Pulses (500Hz, 250Hz, 150Hz, 50Hz)
+// 3. Frequency Hopping Spread Spectrum (FHSS across >= 3 channels in 600ms)
+// 4. Non-Standard 10 MHz Flat-Topped OFDM PHY Bursts
+#define BEHAVIOR_DETECTION_ENABLED  1
+
+// Timing Bins in microseconds (nominal +/- tolerance):
+#define IAT_BIN_500HZ_US            2000    // 500 Hz RC link (ExpressLRS, Tracer)
+#define IAT_TOL_500HZ_US            250
+#define IAT_BIN_250HZ_US            4000    // 250 Hz RC link (ExpressLRS, Crossfire)
+#define IAT_TOL_250HZ_US            350
+#define IAT_BIN_150HZ_US            6667    // 150 Hz RC link (Crossfire)
+#define IAT_TOL_150HZ_US            450
+#define IAT_BIN_100HZ_TDD_US        10000   // 10 ms TDD Video / Telemetry (OcuSync, SkyLink)
+#define IAT_TOL_100HZ_TDD_US        750
+#define IAT_BIN_50HZ_US             20000   // 20 ms TDD Video / 50 Hz RC link
+#define IAT_TOL_50HZ_US             1000
+
+#define IAT_MIN_PERIODIC_HITS       4       // Minimum consecutive periodic frames to classify
+#define FHSS_MIN_CHANNELS           3       // Minimum distinct channels seen in window to flag FHSS
+#define FHSS_WINDOW_MS              600     // Sliding window for channel-hop tracking
+#define BEHAVIOR_HOLD_TIME_MS       2000    // Hold behavioral threat active for 2s
+
+// Behavioral Classification Bitmask Flags:
+enum DroneBehaviorFlags {
+    DRONE_BEHAVIOR_NONE         = 0,
+    DRONE_BEHAVIOR_PERIODIC_TDD = (1 << 0), // 10ms or 20ms rigid TDD video frames
+    DRONE_BEHAVIOR_RC_LINK      = (1 << 1), // 50/150/250/500 Hz clocked RC control pulses
+    DRONE_BEHAVIOR_FHSS_HOPPING = (1 << 2), // Rapid channel hopping across 2.4 GHz band
+    DRONE_BEHAVIOR_PHY_ANOMALY  = (1 << 3)  // Non-standard 10MHz OFDM / raw physical bursts
+};
+
+// Global Behavioral Detection State
+extern volatile uint8_t  g_droneBehaviorFlags;
+extern volatile uint16_t g_droneDetectedRateHz;
+extern volatile uint8_t  g_droneHopCount;
+
+
+// -----------------------------------------------------------------------------
 // 3. INMP441 I2S ACOUSTIC SENSING PARAMETERS (DISABLED FOR CURRENT BUILD)
 // -----------------------------------------------------------------------------
 #define ACOUSTIC_DETECTOR_ENABLED   0       // 0 = Disabled (RF-only focus), 1 = Enabled
