@@ -113,7 +113,6 @@ void RFDetector::update() {
     }
 
     // 7. Update globally visible telemetry variables
-    g_droneIncoming   = _droneIncoming;
     g_rfThreatPercent = _threatPercent;
     g_rfDbm           = _estimatedDbm;
     g_rfMilliVolts    = _filteredMv;
